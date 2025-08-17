@@ -3,19 +3,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
 import logging
+from rate_limiter import rate_limiter
 
 logger = logging.getLogger(__name__)
 
 class DCACalculator:
     def __init__(self):
+        # Khởi tạo Binance client (có thể cần API keys cho rate limit cao hơn)
         self.client = Client()
         self.investment_per_hour = 1000
-        self.update_activity = None  # Sẽ được set từ bên ngoài
-        self.app_activity = None
-    def set_activity_tracker(self, update_func, activity_dict):
-        """Set activity tracking functions"""
-        self.update_activity = update_func
-        self.app_activity = activity_dict
         
     def get_utc_today_start(self):
         """Get 00:00 UTC của ngày hôm nay"""
@@ -33,68 +29,26 @@ class DCACalculator:
     def get_all_usdt_futures(self):
         """Lấy tất cả USDT futures symbols"""
         try:
-            if self.update_activity:
-                self.update_activity("fetching", "Fetching USDT futures symbols from Binance...")
-            if self.app_activity:
-                self.app_activity["stats"]["api_calls"] += 1
-            
             exchange_info = self.client.futures_exchange_info()
             symbols = [
                 symbol['symbol']
                 for symbol in exchange_info['symbols']
-                if symbol['marginAsset'] == 'USDT' and symbol['contractType'] == 'PERPETUAL'
+                if symbol['marginAsset'] == 'USDT' 
+                and symbol['contractType'] == 'PERPETUAL'
+                and symbol['status'] == 'TRADING'
             ]
             
-            if self.update_activity:
-                self.update_activity("idle", f"Found {len(symbols)} USDT futures symbols")
-            return sorted(symbols)
+            # Giới hạn số lượng để test nhanh hơn
+            return sorted(symbols)  # Chỉ lấy 50 symbols đầu để test
+            
         except Exception as e:
             logger.error(f"Error fetching futures symbols: {e}")
-            if self.update_activity:
-                self.update_activity("error", f"Error fetching symbols: {str(e)}")
-            if self.app_activity:
-                self.app_activity["progress"]["errors"] += 1
-            return []        
-    def get_utc_today_start(self):
-        """Get 00:00 UTC của ngày hôm nay"""
-        now_utc = datetime.now(timezone.utc)
-        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        return today_start
-    
-    def get_hours_since_start(self):
-        """Tính số giờ từ 00:00 UTC đến hiện tại"""
-        start_time = self.get_utc_today_start()
-        current_time = datetime.now(timezone.utc)
-        hours_diff = (current_time - start_time).total_seconds() / 3600
-        return int(hours_diff)  # Chỉ tính giờ tròn đã qua
-
-    def get_all_usdt_futures(self):
-        """Lấy tất cả USDT futures symbols"""
-        try:
-            self.dca_app.update_activity("fetching", "Fetching USDT futures symbols from Binance...")
-            self.dca_app.app_activity["stats"]["api_calls"] += 1
-            
-            exchange_info = self.client.futures_exchange_info()
-            symbols = [
-                symbol['symbol']
-                for symbol in exchange_info['symbols']
-                if symbol['marginAsset'] == 'USDT' and symbol['contractType'] == 'PERPETUAL'
-            ]
-            
-            self.dca_app.update_activity("idle", f"Found {len(symbols)} USDT futures symbols")
-            return sorted(symbols)
-        except Exception as e:
-            logger.error(f"Error fetching futures symbols: {e}")
-            self.dca_app.update_activity("error", f"Error fetching symbols: {str(e)}")
-            self.dca_app.app_activity["progress"]["errors"] += 1
             return []
 
     def get_hourly_prices(self, symbol, hours_back):
         """Lấy giá theo từng giờ từ 00:00 UTC đến hiện tại"""
         try:
-            self.dca_app.app_activity["stats"]["api_calls"] += 1
-            
-            # Lấy klines 1h từ đầu ngày
+            rate_limiter.wait_if_needed()
             start_time = self.get_utc_today_start()
             start_timestamp = int(start_time.timestamp() * 1000)
             
@@ -102,83 +56,78 @@ class DCACalculator:
                 symbol=symbol,
                 interval=Client.KLINE_INTERVAL_1HOUR,
                 startTime=start_timestamp,
-                limit=24  # Tối đa 24 giờ trong ngày
+                limit=24
             )
             
             if not klines:
                 return []
             
-            # Chuyển đổi sang DataFrame
             df = pd.DataFrame(klines, columns=[
                 'Open Time', 'Open', 'High', 'Low', 'Close', 'Volume',
                 'Close Time', 'Quote Asset Volume', 'Number of Trades',
                 'Taker Buy Base Asset Volume', 'Taker Buy Quote Asset Volume', 'Ignore'
             ])
             
-            # Chỉ lấy các giờ tròn đã hoàn thành
             df['Open Time'] = pd.to_datetime(df['Open Time'], unit='ms')
             df['Close'] = pd.to_numeric(df['Close'])
             
-            # Lọc chỉ lấy giờ đã hoàn thành (không lấy giờ hiện tại chưa đóng)
             completed_hours = df.head(hours_back)
             
             return completed_hours[['Open Time', 'Close']].to_dict('records')
             
         except Exception as e:
             logger.error(f"Error getting hourly prices for {symbol}: {e}")
-            self.dca_app.app_activity["progress"]["errors"] += 1
             return []
     
     def calculate_symbol_dca_performance(self, symbol):
         """Tính toán hiệu suất DCA cho 1 symbol"""
         try:
-            self.dca_app.update_activity("calculating", f"Calculating DCA performance", symbol)
-            
             hours_passed = self.get_hours_since_start()
             if hours_passed == 0:
                 return None
+            import signal
             
-            # Lấy giá theo giờ
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Symbol processing timeout")
+            
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(30)  # 30 seconds timeout per symbol            
             hourly_prices = self.get_hourly_prices(symbol, hours_passed)
             if not hourly_prices:
                 return None
             
-            # Tính toán DCA
             total_invested = 0
             total_tokens = 0
             buy_prices = []
             winning_buys = 0
             
             # Lấy giá hiện tại
-            current_ticker = self.client.futures_symbol_ticker(symbol=symbol)
-            current_price = float(current_ticker['price'])
+            try:
+                current_ticker = self.client.futures_symbol_ticker(symbol=symbol)
+                current_price = float(current_ticker['price'])
+            except:
+                return None
             
             # Tính cho từng lần mua
             for i, price_data in enumerate(hourly_prices):
                 buy_price = price_data['Close']
                 buy_prices.append(buy_price)
                 
-                # Mua $1000 tại giá này
                 tokens_bought = self.investment_per_hour / buy_price
                 total_tokens += tokens_bought
                 total_invested += self.investment_per_hour
                 
-                # Kiểm tra lần mua này có lời không
                 if current_price > buy_price:
                     winning_buys += 1
             
             if total_invested == 0:
                 return None
             
-            # Tính toán kết quả
             current_value = total_tokens * current_price
             total_pnl = current_value - total_invested
             pnl_percentage = (total_pnl / total_invested) * 100
             
-            # Tính win rate
             win_rate = (winning_buys / len(buy_prices)) * 100 if buy_prices else 0
-            
-            # Tính average hourly P&L
             avg_hourly_pnl = total_pnl / hours_passed if hours_passed > 0 else 0
             
             # Xác định action
@@ -192,9 +141,6 @@ class DCACalculator:
                 action = "🔴 SELL"
             else:
                 action = "🔴 STRONG SELL"
-            
-            # Cập nhật successful calculations
-            self.dca_app.app_activity["stats"]["successful_calculations"] += 1
             
             return {
                 'symbol': symbol,
@@ -216,36 +162,34 @@ class DCACalculator:
             
         except Exception as e:
             logger.error(f"Error calculating DCA for {symbol}: {e}")
-            self.dca_app.app_activity["progress"]["errors"] += 1
             return None
 
     def calculate_daily_dca_ranking(self):
         """Tính toán ranking DCA cho tất cả symbols"""
         try:
-            self.dca_app.update_activity("starting", "Starting DCA ranking calculation...")
-            self.dca_app.app_activity["stats"]["total_requests"] += 1
-            
             start_time = datetime.now()
             hours_passed = self.get_hours_since_start()
             
             if hours_passed == 0:
-                self.dca_app.update_activity("waiting", "Waiting for first hour to complete...")
                 return {
                     'rankings': [],
                     'summary': {
                         'message': 'Too early! Please wait until at least 1 hour has passed since 00:00 UTC',
                         'hours_passed': 0,
-                        'total_symbols': 0
+                        'total_symbols': 0,
+                        'total_invested': 0,
+                        'total_current_value': 0,
+                        'total_pnl': 0,
+                        'avg_pnl_percentage': 0,
+                        'profitable_rate': 0
                     },
                     'last_update': start_time.isoformat()
                 }
             
             logger.info(f"Starting DCA ranking calculation for {hours_passed} hours...")
             
-            # Lấy tất cả symbols
             symbols = self.get_all_usdt_futures()
-            self.dca_app.update_activity("calculating", "Processing symbols for DCA ranking...", 
-                          total=len(symbols))
+            logger.info(f"Processing {len(symbols)} symbols...")
             
             rankings = []
             processed = 0
@@ -253,20 +197,17 @@ class DCACalculator:
             
             for symbol in symbols:
                 try:
-                    self.dca_app.update_activity("calculating", f"Processing symbol {processed+1}/{len(symbols)}", 
-                                  symbol, processed, len(symbols))
-                    
                     result = self.calculate_symbol_dca_performance(symbol)
                     if result:
                         rankings.append(result)
                     processed += 1
                     
-                    if processed % 25 == 0:
+                    if processed % 50 == 0:
                         logger.info(f"Processed {processed}/{len(symbols)} symbols...")
-                        
+                    import time
+                    time.sleep(0.1)  # Giới hạn tốc độ để tránh rate limit
                 except Exception as e:
                     errors += 1
-                    self.dca_app.app_activity["progress"]["errors"] += 1
                     logger.error(f"Error processing {symbol}: {e}")
                     continue
             
@@ -298,7 +239,6 @@ class DCACalculator:
                 'errors': errors
             }
             
-            self.dca_app.update_activity("completed", f"DCA ranking completed: {len(rankings)} symbols, {profitable_count} profitable")
             logger.info(f"DCA ranking completed: {len(rankings)} symbols, {profitable_count} profitable")
             
             return {
@@ -309,8 +249,7 @@ class DCACalculator:
             
         except Exception as e:
             logger.error(f"Error in DCA ranking calculation: {e}")
-            self.dca_app.update_activity("error", f"DCA calculation failed: {str(e)}")
-            raise
+            raise   
 
     def get_symbol_dca_details(self, symbol):
         """Lấy chi tiết DCA cho symbol cụ thể"""
@@ -319,8 +258,6 @@ class DCACalculator:
             if not result:
                 return None
             
-            # Thêm thông tin chi tiết hơn
-            hours_passed = self.get_hours_since_start()
             hourly_details = []
             
             for i, buy_price in enumerate(result['buy_prices']):

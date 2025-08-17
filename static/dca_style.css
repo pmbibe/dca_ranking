@@ -319,3 +319,75 @@
         margin-bottom: 10px;
     }
 }
+/* Log Display Styles */
+.log-display {
+    background: #1e1e1e;
+    border-radius: 10px;
+    padding: 15px;
+    border: 1px solid #444;
+}
+
+.log-display h6 {
+    color: #00ff00;
+    margin-bottom: 10px;
+}
+
+.log-container {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #000;
+    border-radius: 5px;
+    padding: 10px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85em;
+}
+
+.log-entry {
+    margin-bottom: 5px;
+    color: #fff;
+}
+
+.log-time {
+    color: #888;
+    margin-right: 10px;
+}
+
+.log-message {
+    color: #fff;
+}
+
+.log-success {
+    color: #00ff00;
+}
+
+.log-error {
+    color: #ff4444;
+}
+
+.log-warning {
+    color: #ffaa00;
+}
+
+.log-info {
+    color: #4da6ff;
+}
+
+/* Button States */
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#startScanButton.scanning {
+    background: linear-gradient(90deg, #ff6b6b, #ee5a24);
+    border: none;
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
+}
+
+/* Existing styles remain the same... */

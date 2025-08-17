@@ -3,23 +3,58 @@ let currentFilter = 'all';
 let sortColumn = 0;
 let sortDirection = 'desc';
 let activityInterval;
+let isScanning = false;
 
-// Initialize activity monitoring
+// Initialize
 document.addEventListener('DOMContentLoaded', function() {
     startActivityMonitoring();
+    addLogEntry('System initialized successfully', 'success');
     console.log('DCA Ranking App initialized');
 });
-
-// Start activity monitoring
-function startActivityMonitoring() {
-    // Update immediately
-    fetchActivityStatus();
+// Start DCA Scan
+function startDCAScan() {
+    const startBtn = document.getElementById('startScanButton');
+    const refreshBtn = document.getElementById('refreshButton');
     
-    // Update every 2 seconds
-    activityInterval = setInterval(fetchActivityStatus, 2000);
+    if (isScanning) {
+        showNotification('Scan is already in progress!', 'warning');
+        return;
+    }
+    
+    isScanning = true;
+    startBtn.disabled = true;
+    startBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Scanning...';
+    startBtn.classList.add('scanning');
+    
+    refreshBtn.disabled = false;
+    
+    // Show log display
+    document.getElementById('logDisplay').style.display = 'block';
+    addLogEntry('Starting DCA analysis scan...', 'info');
+    
+    // Clear previous data
+    document.getElementById('rankingTableBody').innerHTML = `
+        <tr>
+            <td colspan="9" class="text-center py-5">
+                <div class="loading-state">
+                    <i class="bi bi-hourglass-split loading-spinner"></i>
+                    <h5>Scanning in progress...</h5>
+                    <p class="text-muted">Analyzing DCA performance for USDT futures</p>
+                </div>
+            </td>
+        </tr>
+    `;
+    
+    // Start the scan
+    refreshRanking();
 }
 
-// Fetch activity status
+// Enhanced activity monitoring
+function startActivityMonitoring() {
+    fetchActivityStatus();
+    activityInterval = setInterval(fetchActivityStatus, 1000); // Update every second during scan
+}
+
 function fetchActivityStatus() {
     fetch('/api/activity-status')
         .then(response => response.json())
@@ -32,17 +67,13 @@ function fetchActivityStatus() {
         });
 }
 
-// Update activity display
 function updateActivityDisplay(data) {
-    // Update status indicator
     const statusIndicator = document.getElementById('statusIndicator');
     const activityStatus = document.getElementById('activityStatus');
     const activityOperation = document.getElementById('activityOperation');
     
-    // Remove all status classes
     statusIndicator.className = 'status-indicator ' + data.status;
     
-    // Update status text and icon
     let statusText = '';
     let iconClass = 'bi-circle-fill';
     
@@ -50,114 +81,89 @@ function updateActivityDisplay(data) {
         case 'idle':
             statusText = 'System Ready';
             iconClass = 'bi-circle-fill text-success';
+            if (isScanning) {
+                resetScanButtons();
+            }
             break;
         case 'calculating':
-            statusText = 'Calculating DCA Rankings';
-            iconClass = 'bi-hourglass-split text-warning';
+            statusText = 'Analyzing DCA Performance';
+            iconClass = 'bi-cpu text-warning';
             break;
         case 'fetching':
-            statusText = 'Fetching Data';
+            statusText = 'Fetching Market Data';
             iconClass = 'bi-download text-info';
             break;
         case 'starting':
-            statusText = 'Starting Calculation';
+            statusText = 'Initializing Scan';
             iconClass = 'bi-play-circle text-primary';
             break;
         case 'completed':
-            statusText = 'Calculation Completed';
+            statusText = 'Scan Completed';
             iconClass = 'bi-check-circle-fill text-success';
+            addLogEntry('DCA analysis completed successfully!', 'success');
             break;
         case 'error':
             statusText = 'System Error';
             iconClass = 'bi-exclamation-triangle-fill text-danger';
+            addLogEntry('Error occurred during scan: ' + data.current_operation, 'error');
+            resetScanButtons();
             break;
-        case 'waiting':
-            statusText = 'Waiting for Data';
-            iconClass = 'bi-clock text-secondary';
-            break;
-        default:
-            statusText = 'Unknown Status';
-            iconClass = 'bi-question-circle text-muted';
     }
     
     statusIndicator.innerHTML = `<i class="${iconClass}"></i>`;
     activityStatus.textContent = statusText;
     activityOperation.textContent = data.current_operation || 'No active operations';
     
-    // Update uptime
-    document.getElementById('systemUptime').textContent = `Uptime: ${data.stats.uptime}`;
-    
-    // Update last activity
-    if (data.last_activity) {
-        const lastActivity = new Date(data.last_activity);
-        const now = new Date();
-        const diffSeconds = Math.floor((now - lastActivity) / 1000);
-        
-        let lastActivityText = '';
-        if (diffSeconds < 60) {
-            lastActivityText = `${diffSeconds}s ago`;
-        } else if (diffSeconds < 3600) {
-            lastActivityText = `${Math.floor(diffSeconds / 60)}m ago`;
-        } else {
-            lastActivityText = lastActivity.toLocaleTimeString();
-        }
-        
-        document.getElementById('lastActivity').textContent = `Last activity: ${lastActivityText}`;
+    // Update progress if available
+    if (data.progress && data.progress.total > 0) {
+        updateProgressDisplay(data.progress);
     }
     
-    // Show/hide progress bar
-    const progressContainer = document.getElementById('activityProgress');
-    if (data.status === 'calculating' && data.progress.total > 0) {
-        progressContainer.style.display = 'block';
-        updateProgressBar(data.progress);
-    } else {
-        progressContainer.style.display = 'none';
-    }
-    
-    // Update system stats with animation
+    // Update stats
     updateStatWithAnimation('totalRequests', data.stats.total_requests);
     updateStatWithAnimation('successfulCalcs', data.stats.successful_calculations);
     updateStatWithAnimation('apiCalls', data.stats.api_calls);
     updateStatWithAnimation('errorCount', data.progress.errors);
+    
+    // Update uptime
+    document.getElementById('systemUptime').textContent = `Uptime: ${data.stats.uptime}`;
 }
 
-// Update progress bar
-function updateProgressBar(progress) {
-    const currentSymbol = document.getElementById('currentSymbolActivity');
-    const progressText = document.getElementById('progressText');
-    const progressBar = document.getElementById('activityProgressBar');
-    const processedSymbols = document.getElementById('processedSymbols');
-    const totalSymbols = document.getElementById('totalSymbols');
-    const estimatedTime = document.getElementById('estimatedTime');
+function updateProgressDisplay(progress) {
+    const progressContainer = document.getElementById('activityProgress');
     
-    // Update current symbol with highlight
-    if (progress.current_symbol && progress.current_symbol !== currentSymbol.textContent) {
-        currentSymbol.textContent = progress.current_symbol;
-        currentSymbol.style.animation = 'none';
-        setTimeout(() => {
-            currentSymbol.style.animation = 'statUpdate 0.3s ease-in-out';
-        }, 10);
-    }
-    
-    // Update progress bar
-    progressBar.style.width = `${progress.percentage}%`;
-    progressText.textContent = `${progress.percentage}%`;
-    
-    // Update counts
-    processedSymbols.textContent = progress.processed;
-    totalSymbols.textContent = progress.total;
-    
-    // Update ETA
-    estimatedTime.textContent = progress.eta || 'Calculating...';
-    
-    // Change progress bar color based on percentage
-    if (progress.percentage < 30) {
-        progressBar.style.background = 'linear-gradient(90deg, #dc3545, #fd7e14)';
-    } else if (progress.percentage < 70) {
-        progressBar.style.background = 'linear-gradient(90deg, #fd7e14, #ffc107)';
+    if (progress.total > 0) {
+        progressContainer.style.display = 'block';
+        
+        // Update current symbol
+        if (progress.current_symbol) {
+            document.getElementById('currentSymbolActivity').textContent = progress.current_symbol;
+            addLogEntry(`Processing ${progress.current_symbol}... (${progress.processed}/${progress.total})`, 'info');
+        }
+        
+        // Update progress bar
+        const progressBar = document.getElementById('activityProgressBar');
+        progressBar.style.width = `${progress.percentage}%`;
+        document.getElementById('progressText').textContent = `${progress.percentage}%`;
+        
+        // Update counts
+        document.getElementById('processedSymbols').textContent = progress.processed;
+        document.getElementById('totalSymbols').textContent = progress.total;
+        
+        // Update ETA
+        document.getElementById('estimatedTime').textContent = progress.eta || 'Calculating...';
     } else {
-        progressBar.style.background = 'linear-gradient(90deg, #28a745, #20c997)';
+        progressContainer.style.display = 'none';
     }
+}
+
+function resetScanButtons() {
+    const startBtn = document.getElementById('startScanButton');
+    
+    isScanning = false;
+    startBtn.disabled = false;
+    startBtn.innerHTML = '<i class="bi bi-play-circle"></i> Start DCA Scan';
+    startBtn.classList.remove('scanning');
 }
 
 // Update stat with animation
@@ -189,22 +195,17 @@ function showActivityError() {
     if (activityOperation) activityOperation.textContent = 'Unable to fetch activity status';
 }
 
-// Refresh ranking data (enhanced with activity awareness)
+
+// Enhanced refresh function
 function refreshRanking() {
     const refreshBtn = document.getElementById('refreshButton');
     const statusElement = document.getElementById('status');
     
-    // Don't allow refresh if already calculating
-    const currentStatus = document.getElementById('activityStatus')?.textContent;
-    if (currentStatus && (currentStatus.includes('Calculating') || currentStatus.includes('Fetching'))) {
-        showNotification('System is busy! Please wait for current operation to complete.', 'warning');
-        return;
-    }
-    
-    // Update UI to show loading
     refreshBtn.disabled = true;
     refreshBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Loading...';
     statusElement.innerHTML = '<i class="bi bi-circle-fill text-warning"></i> Loading...';
+    
+    addLogEntry('Requesting DCA ranking data...', 'info');
     
     fetch('/api/dca-ranking')
         .then(response => response.json())
@@ -215,16 +216,22 @@ function refreshRanking() {
                 updateRankingTable(rankingData);
                 updateLastUpdate(data.last_update);
                 statusElement.innerHTML = '<i class="bi bi-circle-fill text-success"></i> Updated';
+                addLogEntry(`Loaded ${data.data.length} symbols successfully`, 'success');
                 showNotification('DCA ranking updated successfully!', 'success');
+                resetScanButtons();
             } else {
+                addLogEntry('Error: ' + data.message, 'error');
                 showNotification('Error: ' + data.message, 'error');
                 statusElement.innerHTML = '<i class="bi bi-circle-fill text-danger"></i> Error';
+                resetScanButtons();
             }
         })
         .catch(error => {
             console.error('Error fetching ranking:', error);
+            addLogEntry('Network error: ' + error.message, 'error');
             showNotification('Failed to fetch ranking data', 'error');
             statusElement.innerHTML = '<i class="bi bi-circle-fill text-danger"></i> Error';
+            resetScanButtons();
         })
         .finally(() => {
             refreshBtn.disabled = false;
@@ -232,6 +239,27 @@ function refreshRanking() {
         });
 }
 
+// Add log entry function
+function addLogEntry(message, type = 'info') {
+    const logContainer = document.getElementById('logContainer');
+    const timestamp = new Date().toLocaleTimeString();
+    
+    const logEntry = document.createElement('div');
+    logEntry.className = `log-entry log-${type}`;
+    logEntry.innerHTML = `
+        <span class="log-time">[${timestamp}]</span>
+        <span class="log-message">${message}</span>
+    `;
+    
+    logContainer.appendChild(logEntry);
+    logContainer.scrollTop = logContainer.scrollHeight; // Auto scroll to bottom
+    
+    // Keep only last 50 log entries
+    const entries = logContainer.querySelectorAll('.log-entry');
+    if (entries.length > 100) {
+        entries[0].remove();
+    }
+}
 // Update summary statistics
 function updateSummaryStats(summary) {
     const hoursElement = document.getElementById('hoursTracked');

@@ -43,18 +43,10 @@ def update_activity(status, operation, symbol=None, processed=0, total=0):
         app_activity['progress']['processed'] = processed
         app_activity['progress']['total'] = total
         app_activity['progress']['percentage'] = round((processed / total) * 100, 1)
-        
-        # Calculate ETA
-        if processed > 0:
-            elapsed = (datetime.now() - app_activity['start_time']).total_seconds()
-            rate = processed / elapsed
-            remaining = total - processed
-            eta_seconds = remaining / rate if rate > 0 else 0
-            app_activity['progress']['eta'] = f"{int(eta_seconds//60)}m {int(eta_seconds%60)}s"
 
 # Initialize calculator
 dca_calculator = DCACalculator()
-dca_calculator.set_activity_tracker(update_activity, app_activity)
+
 @app.route('/')
 def dca_index():
     """DCA Ranking main page"""
@@ -82,15 +74,29 @@ def get_activity_status():
             'status': 'error',
             'current_operation': f'Error: {str(e)}',
             'stats': app_activity['stats'],
-            'progress': {'errors': app_activity['progress']['errors'] + 1}
+            'progress': {'errors': 1}
         })
 
 @app.route('/api/dca-ranking')
 def get_dca_ranking():
     """API endpoint for DCA ranking data"""
     try:
+        update_activity("calculating", "Starting DCA ranking calculation...")
+        app_activity['stats']['total_requests'] += 1
+        # ✅ THÊM: Reset progress cho scan mới
+        app_activity['progress'] = {
+            'current_symbol': None,
+            'processed': 0,
+            'total': 0,
+            'percentage': 0,
+            'eta': None,
+            'errors': 0
+        }        
         ranking_data = dca_calculator.calculate_daily_dca_ranking()
+        
+        update_activity("completed", "DCA ranking calculation completed")
         app_activity['stats']['successful_calculations'] += 1
+        
         return jsonify({
             'status': 'success',
             'data': ranking_data['rankings'],
@@ -99,12 +105,19 @@ def get_dca_ranking():
         })
     except Exception as e:
         logger.error(f"Error getting DCA ranking: {e}")
+        update_activity("error", f"Error: {str(e)}")
         app_activity['progress']['errors'] += 1
         return jsonify({
             'status': 'error',
             'message': str(e)
         })
-
+@app.route('/api/logs')
+def get_logs():
+    """Get system logs"""
+    return jsonify({
+        'status': 'success',
+        'logs': app_activity.get('logs', [])
+    })
 @app.route('/api/dca-symbol/<symbol>')
 def get_symbol_details(symbol):
     """Get detailed DCA data for specific symbol"""
