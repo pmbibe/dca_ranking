@@ -10,11 +10,51 @@ class DCACalculator:
     def __init__(self):
         self.client = Client()
         self.investment_per_hour = 1000
-        # Import dca_app để sử dụng activity functions
-        import dca_app
-        self.dca_app = dca_app
-        self.dca_app.update_activity("idle", "DCA Calculator initialized")
+        self.update_activity = None  # Sẽ được set từ bên ngoài
+        self.app_activity = None
+    def set_activity_tracker(self, update_func, activity_dict):
+        """Set activity tracking functions"""
+        self.update_activity = update_func
+        self.app_activity = activity_dict
         
+    def get_utc_today_start(self):
+        """Get 00:00 UTC của ngày hôm nay"""
+        now_utc = datetime.now(timezone.utc)
+        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        return today_start
+    
+    def get_hours_since_start(self):
+        """Tính số giờ từ 00:00 UTC đến hiện tại"""
+        start_time = self.get_utc_today_start()
+        current_time = datetime.now(timezone.utc)
+        hours_diff = (current_time - start_time).total_seconds() / 3600
+        return int(hours_diff)
+
+    def get_all_usdt_futures(self):
+        """Lấy tất cả USDT futures symbols"""
+        try:
+            if self.update_activity:
+                self.update_activity("fetching", "Fetching USDT futures symbols from Binance...")
+            if self.app_activity:
+                self.app_activity["stats"]["api_calls"] += 1
+            
+            exchange_info = self.client.futures_exchange_info()
+            symbols = [
+                symbol['symbol']
+                for symbol in exchange_info['symbols']
+                if symbol['marginAsset'] == 'USDT' and symbol['contractType'] == 'PERPETUAL'
+            ]
+            
+            if self.update_activity:
+                self.update_activity("idle", f"Found {len(symbols)} USDT futures symbols")
+            return sorted(symbols)
+        except Exception as e:
+            logger.error(f"Error fetching futures symbols: {e}")
+            if self.update_activity:
+                self.update_activity("error", f"Error fetching symbols: {str(e)}")
+            if self.app_activity:
+                self.app_activity["progress"]["errors"] += 1
+            return []        
     def get_utc_today_start(self):
         """Get 00:00 UTC của ngày hôm nay"""
         now_utc = datetime.now(timezone.utc)

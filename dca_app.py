@@ -1,86 +1,96 @@
 from flask import Flask, render_template, jsonify
 from dca_calculator import DCACalculator
 import logging
-import threading
-import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Global activity tracking
+# Activity tracking system
 app_activity = {
-    "status": "idle",
-    "last_activity": None,
-    "current_operation": "",
-    "progress": {
-        "current_symbol": "",
-        "processed": 0,
-        "total": 0,
-        "errors": 0,
-        "start_time": None
+    'status': 'idle',
+    'current_operation': 'System ready',
+    'last_activity': None,
+    'start_time': datetime.now(),
+    'progress': {
+        'current_symbol': None,
+        'processed': 0,
+        'total': 0,
+        'percentage': 0,
+        'eta': None,
+        'errors': 0
     },
-    "stats": {
-        "total_requests": 0,
-        "successful_calculations": 0,
-        "api_calls": 0,
-        "uptime_start": datetime.now()
+    'stats': {
+        'total_requests': 0,
+        'successful_calculations': 0,
+        'api_calls': 0,
+        'uptime': '0m'
     }
 }
 
-def update_activity(status, operation="", symbol="", processed=0, total=0):
+def update_activity(status, operation, symbol=None, processed=0, total=0):
     """Update activity status"""
-    app_activity["status"] = status
-    app_activity["last_activity"] = datetime.now()
-    app_activity["current_operation"] = operation
-    app_activity["progress"]["current_symbol"] = symbol
-    app_activity["progress"]["processed"] = processed
-    app_activity["progress"]["total"] = total
+    app_activity['status'] = status
+    app_activity['current_operation'] = operation
+    app_activity['last_activity'] = datetime.now().isoformat()
     
-    if status == "calculating" and not app_activity["progress"]["start_time"]:
-        app_activity["progress"]["start_time"] = datetime.now()
-    elif status in ["idle", "completed", "error"]:
-        app_activity["progress"]["start_time"] = None
-
-def format_uptime(seconds):
-    """Format uptime in human readable format"""
-    days = int(seconds // 86400)
-    hours = int((seconds % 86400) // 3600)
-    minutes = int((seconds % 3600) // 60)
+    if symbol:
+        app_activity['progress']['current_symbol'] = symbol
     
-    if days > 0:
-        return f"{days}d {hours}h {minutes}m"
-    elif hours > 0:
-        return f"{hours}h {minutes}m"
-    else:
-        return f"{minutes}m"
+    if total > 0:
+        app_activity['progress']['processed'] = processed
+        app_activity['progress']['total'] = total
+        app_activity['progress']['percentage'] = round((processed / total) * 100, 1)
+        
+        # Calculate ETA
+        if processed > 0:
+            elapsed = (datetime.now() - app_activity['start_time']).total_seconds()
+            rate = processed / elapsed
+            remaining = total - processed
+            eta_seconds = remaining / rate if rate > 0 else 0
+            app_activity['progress']['eta'] = f"{int(eta_seconds//60)}m {int(eta_seconds%60)}s"
 
-def format_time(seconds):
-    """Format time in human readable format"""
-    if seconds < 60:
-        return f"{int(seconds)}s"
-    elif seconds < 3600:
-        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
-    else:
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        return f"{hours}h {minutes}m"
-
-# Initialize DCA Calculator after defining helper functions
+# Initialize calculator
 dca_calculator = DCACalculator()
-
+dca_calculator.set_activity_tracker(update_activity, app_activity)
 @app.route('/')
 def dca_index():
     """DCA Ranking main page"""
     return render_template('dca_ranking.html')
+
+@app.route('/api/activity-status')
+def get_activity_status():
+    """API endpoint for activity status"""
+    try:
+        # Update uptime
+        uptime_seconds = (datetime.now() - app_activity['start_time']).total_seconds()
+        if uptime_seconds < 60:
+            app_activity['stats']['uptime'] = f"{int(uptime_seconds)}s"
+        elif uptime_seconds < 3600:
+            app_activity['stats']['uptime'] = f"{int(uptime_seconds//60)}m"
+        else:
+            hours = int(uptime_seconds // 3600)
+            minutes = int((uptime_seconds % 3600) // 60)
+            app_activity['stats']['uptime'] = f"{hours}h {minutes}m"
+        
+        return jsonify(app_activity)
+    except Exception as e:
+        logger.error(f"Error getting activity status: {e}")
+        return jsonify({
+            'status': 'error',
+            'current_operation': f'Error: {str(e)}',
+            'stats': app_activity['stats'],
+            'progress': {'errors': app_activity['progress']['errors'] + 1}
+        })
 
 @app.route('/api/dca-ranking')
 def get_dca_ranking():
     """API endpoint for DCA ranking data"""
     try:
         ranking_data = dca_calculator.calculate_daily_dca_ranking()
+        app_activity['stats']['successful_calculations'] += 1
         return jsonify({
             'status': 'success',
             'data': ranking_data['rankings'],
@@ -89,7 +99,7 @@ def get_dca_ranking():
         })
     except Exception as e:
         logger.error(f"Error getting DCA ranking: {e}")
-        update_activity("error", f"DCA ranking failed: {str(e)}")
+        app_activity['progress']['errors'] += 1
         return jsonify({
             'status': 'error',
             'message': str(e)
@@ -105,69 +115,10 @@ def get_symbol_details(symbol):
             'data': details
         })
     except Exception as e:
-        logger.error(f"Error getting symbol details: {e}")
         return jsonify({
             'status': 'error',
             'message': str(e)
         })
-
-@app.route('/api/activity-status')
-def get_activity_status():
-    """Get current activity status"""
-    current_time = datetime.now()
-    
-    # Calculate uptime
-    uptime_seconds = (current_time - app_activity["stats"]["uptime_start"]).total_seconds()
-    uptime_formatted = format_uptime(uptime_seconds)
-    
-    # Calculate progress percentage
-    progress_pct = 0
-    if app_activity["progress"]["total"] > 0:
-        progress_pct = round((app_activity["progress"]["processed"] / app_activity["progress"]["total"]) * 100, 1)
-    
-    # Calculate ETA
-    eta_formatted = "Calculating..."
-    if app_activity["progress"]["start_time"] and app_activity["progress"]["processed"] > 0:
-        elapsed = (current_time - app_activity["progress"]["start_time"]).total_seconds()
-        if elapsed > 0:
-            speed = app_activity["progress"]["processed"] / elapsed
-            if speed > 0:
-                remaining = app_activity["progress"]["total"] - app_activity["progress"]["processed"]
-                eta_seconds = remaining / speed
-                eta_formatted = format_time(eta_seconds)
-    
-    return jsonify({
-        "status": app_activity["status"],
-        "last_activity": app_activity["last_activity"].isoformat() if app_activity["last_activity"] else None,
-        "current_operation": app_activity["current_operation"],
-        "progress": {
-            "current_symbol": app_activity["progress"]["current_symbol"],
-            "processed": app_activity["progress"]["processed"],
-            "total": app_activity["progress"]["total"],
-            "percentage": progress_pct,
-            "errors": app_activity["progress"]["errors"],
-            "eta": eta_formatted
-        },
-        "stats": {
-            "total_requests": app_activity["stats"]["total_requests"],
-            "successful_calculations": app_activity["stats"]["successful_calculations"],
-            "api_calls": app_activity["stats"]["api_calls"],
-            "uptime": uptime_formatted,
-            "uptime_seconds": int(uptime_seconds)
-        },
-        "timestamp": current_time.isoformat()
-    })
-
-def heartbeat():
-    """Background thread to keep activity alive"""
-    while True:
-        time.sleep(30)  # Update every 30 seconds
-        if app_activity["status"] == "idle":
-            app_activity["last_activity"] = datetime.now()
-
-# Start heartbeat thread
-heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
-heartbeat_thread.start()
 
 if __name__ == '__main__':
     logger.info("DCA Ranking App started")
