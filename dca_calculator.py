@@ -84,14 +84,7 @@ class DCACalculator:
         try:
             hours_passed = self.get_hours_since_start()
             if hours_passed == 0:
-                return None
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Symbol processing timeout")
-            
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(30)  # 30 seconds timeout per symbol            
+                return None           
             hourly_prices = self.get_hourly_prices(symbol, hours_passed)
             if not hourly_prices:
                 return None
