@@ -17,5 +17,5 @@ charset-normalizer==3.3.2
 idna==3.6
 requests==2.31.0
 websocket-client==1.6.4
-cryptography==41.0.8
+cryptography==42.0.8
 aiohttp==3.9.1
