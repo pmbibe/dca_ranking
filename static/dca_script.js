@@ -620,7 +620,7 @@ function formatCurrency(amount, showSign = false) {
 }
 
 function openChart(symbol) {
-    window.open(`https://www.tradingview.com/chart/?symbol=BINANCE:${symbol}`, '_blank');
+    window.open(`https://www.tradingview.com/chart/?symbol=BINANCE:${symbol}.P`, '_blank');
 }
 
 function copySymbolData(symbol) {

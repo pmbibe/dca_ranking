@@ -43,9 +43,24 @@ def update_activity(status, operation, symbol=None, processed=0, total=0):
         app_activity['progress']['processed'] = processed
         app_activity['progress']['total'] = total
         app_activity['progress']['percentage'] = round((processed / total) * 100, 1)
+        
+        # Tính ETA
+        if processed > 0:
+            elapsed_time = (datetime.now() - app_activity['start_time']).total_seconds()
+            rate = processed / elapsed_time
+            remaining = total - processed
+            eta_seconds = remaining / rate if rate > 0 else 0
+            app_activity['progress']['eta'] = f"{int(eta_seconds)}s"
 
-# Initialize calculator
-dca_calculator = DCACalculator()
+# Progress callback function
+def progress_callback(symbol, processed, total, errors):
+    """Callback để update progress từ DCACalculator"""
+    update_activity("calculating", f"Processing {symbol}...", symbol, processed, total)
+    app_activity['progress']['errors'] = errors
+
+# Initialize calculator với 20 workers (tăng từ 10)
+dca_calculator = DCACalculator(max_workers=20)
+dca_calculator.set_progress_callback(progress_callback)
 
 @app.route('/')
 def dca_index():
@@ -79,11 +94,12 @@ def get_activity_status():
 
 @app.route('/api/dca-ranking')
 def get_dca_ranking():
-    """API endpoint for DCA ranking data"""
+    """API endpoint for DCA ranking data với parallel processing"""
     try:
-        update_activity("calculating", "Starting DCA ranking calculation...")
+        update_activity("calculating", "Starting parallel DCA ranking calculation...")
         app_activity['stats']['total_requests'] += 1
-        # ✅ THÊM: Reset progress cho scan mới
+        
+        # Reset progress cho scan mới
         app_activity['progress'] = {
             'current_symbol': None,
             'processed': 0,
@@ -91,10 +107,11 @@ def get_dca_ranking():
             'percentage': 0,
             'eta': None,
             'errors': 0
-        }        
+        }
+        
         ranking_data = dca_calculator.calculate_daily_dca_ranking()
         
-        update_activity("completed", "DCA ranking calculation completed")
+        update_activity("completed", "Parallel DCA ranking calculation completed")
         app_activity['stats']['successful_calculations'] += 1
         
         return jsonify({
@@ -111,6 +128,7 @@ def get_dca_ranking():
             'status': 'error',
             'message': str(e)
         })
+
 @app.route('/api/logs')
 def get_logs():
     """Get system logs"""
@@ -118,6 +136,7 @@ def get_logs():
         'status': 'success',
         'logs': app_activity.get('logs', [])
     })
+
 @app.route('/api/dca-symbol/<symbol>')
 def get_symbol_details(symbol):
     """Get detailed DCA data for specific symbol"""
@@ -134,6 +153,6 @@ def get_symbol_details(symbol):
         })
 
 if __name__ == '__main__':
-    logger.info("DCA Ranking App started")
+    logger.info("DCA Ranking App started with parallel processing")
     logger.info("Access http://localhost:8089 for DCA Rankings")
     app.run(debug=True, host='0.0.0.0', port=8089)

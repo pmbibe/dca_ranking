@@ -4,15 +4,30 @@ import numpy as np
 from datetime import datetime, timezone
 import logging
 from rate_limiter import rate_limiter
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
 class DCACalculator:
-    def __init__(self):
-        # Khởi tạo Binance client (có thể cần API keys cho rate limit cao hơn)
+    def __init__(self, max_workers=10):  # Số thread đồng thời
         self.client = Client()
         self.investment_per_hour = 1000
+        self.max_workers = max_workers
+        self.processing_lock = threading.Lock()
+        self.progress_callback = None
         
+    def set_progress_callback(self, callback):
+        """Set callback function để update progress"""
+        self.progress_callback = callback
+    
+    def _update_progress(self, symbol, processed, total, errors=0):
+        """Update progress với thread-safe"""
+        if self.progress_callback:
+            with self.processing_lock:
+                self.progress_callback(symbol, processed, total, errors)
+
     def get_utc_today_start(self):
         """Get 00:00 UTC của ngày hôm nay"""
         now_utc = datetime.now(timezone.utc)
@@ -38,8 +53,7 @@ class DCACalculator:
                 and symbol['status'] == 'TRADING'
             ]
             
-            # Giới hạn số lượng để test nhanh hơn
-            return sorted(symbols)  # Chỉ lấy 50 symbols đầu để test
+            return sorted(symbols)
             
         except Exception as e:
             logger.error(f"Error fetching futures symbols: {e}")
@@ -61,7 +75,7 @@ class DCACalculator:
             
             if not klines:
                 return []
-            
+
             df = pd.DataFrame(klines, columns=[
                 'Open Time', 'Open', 'High', 'Low', 'Close', 'Volume',
                 'Close Time', 'Quote Asset Volume', 'Number of Trades',
@@ -78,13 +92,10 @@ class DCACalculator:
         except Exception as e:
             logger.error(f"Error getting hourly prices for {symbol}: {e}")
             return []
-    
-    def calculate_symbol_dca_performance(self, symbol):
-        """Tính toán hiệu suất DCA cho 1 symbol"""
+
+    def _calculate_single_symbol(self, symbol, hours_passed):
+        """Tính toán DCA cho 1 symbol (thread-safe)"""
         try:
-            hours_passed = self.get_hours_since_start()
-            if hours_passed == 0:
-                return None           
             hourly_prices = self.get_hourly_prices(symbol, hours_passed)
             if not hourly_prices:
                 return None
@@ -96,6 +107,7 @@ class DCACalculator:
             
             # Lấy giá hiện tại
             try:
+                rate_limiter.wait_if_needed()
                 current_ticker = self.client.futures_symbol_ticker(symbol=symbol)
                 current_price = float(current_ticker['price'])
             except:
@@ -157,8 +169,15 @@ class DCACalculator:
             logger.error(f"Error calculating DCA for {symbol}: {e}")
             return None
 
+    def calculate_symbol_dca_performance(self, symbol):
+        """Public method để tính DCA cho 1 symbol"""
+        hours_passed = self.get_hours_since_start()
+        if hours_passed == 0:
+            return None
+        return self._calculate_single_symbol(symbol, hours_passed)
+
     def calculate_daily_dca_ranking(self):
-        """Tính toán ranking DCA cho tất cả symbols"""
+        """Tính toán ranking DCA song song cho tất cả symbols"""
         try:
             start_time = datetime.now()
             hours_passed = self.get_hours_since_start()
@@ -179,30 +198,49 @@ class DCACalculator:
                     'last_update': start_time.isoformat()
                 }
             
-            logger.info(f"Starting DCA ranking calculation for {hours_passed} hours...")
+            logger.info(f"Starting parallel DCA ranking calculation for {hours_passed} hours...")
             
             symbols = self.get_all_usdt_futures()
-            logger.info(f"Processing {len(symbols)} symbols...")
+            logger.info(f"Processing {len(symbols)} symbols with {self.max_workers} workers...")
             
             rankings = []
             processed = 0
             errors = 0
             
-            for symbol in symbols:
-                try:
-                    result = self.calculate_symbol_dca_performance(symbol)
-                    if result:
-                        rankings.append(result)
+            # Parallel processing với ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Submit tất cả các tasks
+                future_to_symbol = {
+                    executor.submit(self._calculate_single_symbol, symbol, hours_passed): symbol 
+                    for symbol in symbols
+                }
+                
+                # Xử lý kết quả khi hoàn thành
+                for future in as_completed(future_to_symbol):
+                    symbol = future_to_symbol[future]
                     processed += 1
                     
-                    if processed % 50 == 0:
-                        logger.info(f"Processed {processed}/{len(symbols)} symbols...")
-                    import time
-                    time.sleep(0.1)  # Giới hạn tốc độ để tránh rate limit
-                except Exception as e:
-                    errors += 1
-                    logger.error(f"Error processing {symbol}: {e}")
-                    continue
+                    try:
+                        # Timeout 30 seconds cho mỗi symbol
+                        result = future.result(timeout=30)
+                        if result:
+                            rankings.append(result)
+                        
+                        # Update progress
+                        self._update_progress(symbol, processed, len(symbols), errors)
+                        
+                        # Log progress mỗi 50 symbols
+                        if processed % 50 == 0:
+                            logger.info(f"Processed {processed}/{len(symbols)} symbols...")
+                            
+                    except FuturesTimeoutError:
+                        errors += 1
+                        logger.warning(f"Timeout processing {symbol}")
+                        self._update_progress(symbol, processed, len(symbols), errors)
+                    except Exception as e:
+                        errors += 1
+                        logger.error(f"Error processing {symbol}: {e}")
+                        self._update_progress(symbol, processed, len(symbols), errors)
             
             # Sort rankings
             rankings.sort(key=lambda x: x['pnl_percentage'], reverse=True)
@@ -229,10 +267,11 @@ class DCACalculator:
                 'profitable_symbols': profitable_count,
                 'profitable_rate': round((profitable_count / len(rankings) * 100), 1) if rankings else 0,
                 'processing_time': round((datetime.now() - start_time).total_seconds(), 2),
-                'errors': errors
+                'errors': errors,
+                'parallel_workers': self.max_workers
             }
             
-            logger.info(f"DCA ranking completed: {len(rankings)} symbols, {profitable_count} profitable")
+            logger.info(f"Parallel DCA ranking completed: {len(rankings)} symbols, {profitable_count} profitable, {errors} errors in {summary['processing_time']}s")
             
             return {
                 'rankings': rankings,
@@ -241,7 +280,7 @@ class DCACalculator:
             }
             
         except Exception as e:
-            logger.error(f"Error in DCA ranking calculation: {e}")
+            logger.error(f"Error in parallel DCA ranking calculation: {e}")
             raise   
 
     def get_symbol_dca_details(self, symbol):
