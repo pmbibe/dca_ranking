@@ -84,6 +84,7 @@ class DCACalculator:
             
             df['Open Time'] = pd.to_datetime(df['Open Time'], unit='ms')
             df['Close'] = pd.to_numeric(df['Close'])
+            df['Volume'] = pd.to_numeric(df['Volume'])
             
             completed_hours = df.head(hours_back)
             
@@ -122,7 +123,7 @@ class DCACalculator:
                 tokens_bought = self.investment_per_hour / buy_price
                 total_tokens += tokens_bought
                 total_invested += self.investment_per_hour
-                total_volume += price_data.get('Volume', 0)  # Lấy volume từ klines data
+                total_volume += float(price_data.get('Volume', 0))  # Lấy volume từ klines data
                 if current_price > buy_price:
                     winning_buys += 1
             
