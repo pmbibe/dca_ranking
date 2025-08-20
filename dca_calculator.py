@@ -87,7 +87,7 @@ class DCACalculator:
             
             completed_hours = df.head(hours_back)
             
-            return completed_hours[['Open Time', 'Close']].to_dict('records')
+            return completed_hours[['Open Time', 'Close', 'Volume']].to_dict('records')
             
         except Exception as e:
             logger.error(f"Error getting hourly prices for {symbol}: {e}")
@@ -102,6 +102,7 @@ class DCACalculator:
             
             total_invested = 0
             total_tokens = 0
+            total_volume = 0
             buy_prices = []
             winning_buys = 0
             
@@ -121,7 +122,7 @@ class DCACalculator:
                 tokens_bought = self.investment_per_hour / buy_price
                 total_tokens += tokens_bought
                 total_invested += self.investment_per_hour
-                
+                total_volume += price_data.get('Volume', 0)  # Lấy volume từ klines data
                 if current_price > buy_price:
                     winning_buys += 1
             
@@ -162,7 +163,9 @@ class DCACalculator:
                 'winning_buys': winning_buys,
                 'avg_hourly_pnl': round(avg_hourly_pnl, 2),
                 'action': action,
-                'buy_prices': buy_prices
+                'buy_prices': buy_prices,
+                'total_volume': round(total_volume, 2),
+                'avg_hourly_volume': round(total_volume / hours_passed, 2) if hours_passed > 0 else 0
             }
             
         except Exception as e:

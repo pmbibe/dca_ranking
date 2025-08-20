@@ -390,4 +390,7 @@
     100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
 }
 
-/* Existing styles remain the same... */
+.volume-cell {
+    font-family: 'Courier New', monospace;
+    color: #6c757d;
+}

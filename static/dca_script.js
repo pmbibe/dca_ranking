@@ -288,6 +288,13 @@ function updateSummaryStats(summary) {
     if (profitableElement) profitableElement.textContent = summary.profitable_rate + '%';
 }
 
+function formatVolume(volume) {
+    if (volume >= 1e9) return (volume / 1e9).toFixed(1) + 'B';
+    if (volume >= 1e6) return (volume / 1e6).toFixed(1) + 'M';
+    if (volume >= 1e3) return (volume / 1e3).toFixed(1) + 'K';
+    return volume.toFixed(0);
+}
+
 // Update ranking table
 function updateRankingTable(data) {
     const tbody = document.getElementById('rankingTableBody');
@@ -322,6 +329,7 @@ function updateRankingTable(data) {
             <tr class="fade-in">
                 <td class="rank-cell ${rankClass}">#${item.rank}</td>
                 <td class="symbol-cell">${item.symbol}</td>
+                <td class="volume-cell">${formatVolume(item.total_volume)}</td>
                 <td class="${pnlClass}">${item.pnl_percentage}%</td>
                 <td class="${pnlClass}">${formatCurrency(item.total_pnl, true)}</td>
                 <td class="${winRateClass}">${item.win_rate}%</td>
@@ -435,6 +443,10 @@ function sortTable(columnIndex) {
                 aVal = a.avg_hourly_pnl;
                 bVal = b.avg_hourly_pnl;
                 break;
+            case 7: // Volume
+                aVal = a.total_volume;
+                bVal = b.total_volume;
+                break;                
             default:
                 return 0;
         }
